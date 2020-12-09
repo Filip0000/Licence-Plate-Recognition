@@ -37,8 +37,9 @@ def sample_video(file_path, sample_frequency):
             if ((sum / fps) % sample_frequency == 0):
                 video_arr.append((sum, frame))
 
-        if(sum == 48):
+        if(sum == 24 * 10):
             break
+
         sum += 1
 
     return video_arr
