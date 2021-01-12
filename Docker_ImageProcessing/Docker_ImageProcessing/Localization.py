@@ -1,7 +1,11 @@
 import cv2
 import pickle
 import numpy as np
-import matplotlib as plt
+import os
+from PIL import Image
+import math
+import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 
 """
 In this file, you need to define plate_detection function.
@@ -19,37 +23,126 @@ Hints:
 2. You may need to define two ways for localizing plates(yellow or other colors)
 """
 
-def show_image(image):
-    cv2.imshow('Image', image)
+
+def show_image(image, label):
+    cv2.imshow(label, image)
     k = cv2.waitKey(0)
 
-def find_corners2(contour):
-    hull = cv2.convexHull(contour)
-    rect = np.zeros((4, 2))
-    pts = []
-    for pt in hull:
-        pts.append(pt[0])
 
-    s = np.sum(pts, axis=1)
-    # Top-left
-    rect[0] = pts[np.argmin(s)]
-    # Bottom-right
-    rect[2] = pts[np.argmax(s)]
+def yellow_mode(frame):
+    # Blur the image to uniformize color of the plate
+    gaussianKernel = cv2.getGaussianKernel(9, 2)
+    blur = cv2.filter2D(frame, -1, gaussianKernel)
 
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
+    # Convert to HSV color model
+    hsv_img = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
 
-    return rect
+    # Yellow parts extraction
+    light_orange = (15, 60, 70)
+    dark_orange = (37, 255, 220)
+    mask = cv2.inRange(hsv_img, light_orange, dark_orange)
 
-def verify_plate(box):
-    """
-    Verifies that a plate correspond to basic standards and has appropriate properties
-    :param box: coordinates of the four vertices of the bounding rectangle
-    :return: boolean value: True if plate is acceptable, False otherwise
-    """
-    rect = order_points(box)
-    (tl, tr, br, bl) = rect
+    # initialize kernel for morphological operations
+    kernel = np.ones((5, 5), np.uint8)
+
+    # perform opening on the mask
+    opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    # perform closing on the mask
+    closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
+
+    # perform dilation on the mask
+    dilation = cv2.morphologyEx(closing, cv2.MORPH_DILATE, kernel)
+
+    return dilation
+
+
+def edge_detection(frame):
+    sobel_Gx1 = np.array([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
+    sobel_Gy1 = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
+    sobel_Gx2 = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+    sobel_Gy2 = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
+
+    frame_x1 = cv2.filter2D(frame, -1, sobel_Gx1)
+    frame_y1 = cv2.filter2D(frame, -1, sobel_Gy1)
+    frame_x2 = cv2.filter2D(frame, -1, sobel_Gx2)
+    frame_y2 = cv2.filter2D(frame, -1, sobel_Gy2)
+
+    one = cv2.bitwise_or(frame_x1, frame_y1)
+    two = cv2.bitwise_or(frame_x2, frame_y2)
+    edges = cv2.bitwise_or(one, two)
+
+    return edges
+
+
+def contour(frame, y, x):
+    contour = []
+
+    queue = []
+    queue.append((y, x))
+
+    while (len(queue) > 0):
+        (i, j) = queue.pop()
+        frame[i, j] = 0
+        contour.append((i, j))
+
+        # check if left pixel is 1 and add to queue if true
+        if j > 0:
+            if frame[i, j - 1] == 255:
+                queue.append((i, j - 1))
+
+        # check if right pixel is 1 and add to queue if true
+        if j < 639:
+            if frame[i, j + 1] == 255:
+                queue.append((i, j + 1))
+
+        # check if down pixel is 1 and add to queue if true
+        if i < 479:
+            if frame[i + 1, j] == 255:
+                queue.append((i + 1, j))
+
+        # check if up pixel is 1 and add to queue if true
+        if i > 0:
+            if frame[i - 1, j] == 255:
+                queue.append((i - 1, j))
+
+    return (frame, contour)
+
+
+def debug(contour):
+    plane = np.zeros((480, 640))
+
+    count = 0
+    for point in contour:
+        plane[point[0], point[1]] = 255
+        cv2.imshow("Plane", plane)
+        cv2.waitKey(1)
+
+def find_contours(frame):
+    duplicate = np.copy(frame)
+    contours = []
+    for y in range(duplicate.shape[0]):
+        for x in range(duplicate.shape[1]):
+            if duplicate[y, x] == 255:
+                duplicate, cnt = contour(duplicate, y, x)
+                contours.append(cnt)
+
+    return contours
+
+
+def find_corners(contour):
+    s = np.sum(contour, axis=1)
+    top_left = contour[np.argmin(s)]
+    bottom_right = contour[np.argmax(s)]
+
+    d = np.diff(contour, axis=1)
+    bottom_left = contour[np.argmin(d)]
+    top_right = contour[np.argmax(d)]
+
+    return (top_left, top_right, bottom_right, bottom_left)
+
+def verify_contour(contour):
+    (tl, tr, br, bl) = find_corners(contour)
 
     # Computes the width of the plate
     lower_width = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
@@ -63,46 +156,97 @@ def verify_plate(box):
 
     # Calculate aspect_ratio of the plate
     if Width and Height:
-        aspect_ratio = Height/Width
+        aspect_ratio = Height / Width
     else:
         aspect_ratio = 1
 
-    # Calculate Area of the plate
-    area = cv2.contourArea(box)
+    area = Width * Height
 
-    # Set conditions for an acceptable plate
-    return (Width > 100) and (aspect_ratio < 0.3) and (area > 2600)
+    # condition
+    return (Width > 100) and (aspect_ratio < 0.33) and (area > 2600)
+
+def homography(frame, width, height, tl, tr, br, bl):
+    TL = [0, 0]
+    TR = [0, width - 1]
+    BL = [height - 1, 0]
+    BR = [height - 1, width - 1]
+
+    A = np.array([
+        [TL[1], TL[0], 1, 0, 0, 0, -tl[1] * TL[1], -tl[1] * TL[0]],
+        [0, 0, 0, TL[1], TL[0], 1, -tl[0] * TL[1], -tl[0] * TL[0]],
+        [TR[1], TR[0], 1, 0, 0, 0, -tr[1] * TR[1], -tr[1] * TR[0]],
+        [0, 0, 0, TR[1], TR[0], 1, -tr[0] * TR[1], -tr[0] * TR[0]],
+        [BL[1], BL[0], 1, 0, 0, 0, -bl[1] * BL[1], -bl[1] * BL[0]],
+        [0, 0, 0, BL[1], BL[0], 1, -bl[0] * BL[1], -bl[0] * BL[0]],
+        [BR[1], BR[0], 1, 0, 0, 0, -br[1] * BR[1], -br[1] * BR[0]],
+        [0, 0, 0, BR[1], BR[0], 1, -br[0] * BR[1], -br[0] * BR[0]]
+    ])
+
+    b = np.array([tl[1], tl[0], tr[1], tr[0], bl[1], bl[0], br[1], br[0]])
+
+    H = np.linalg.lstsq(A, b, rcond=None)[0]
+
+    TM = np.array([
+        [H[0], H[1], H[2]],
+        [H[3], H[4], H[5]],
+        [H[6], H[7], 1]
+    ])
+
+    frame_copy = frame.copy()
+    license_plate = np.zeros((height, width, 3), np.uint8)
+
+    for i in range(height):
+        for j in range(width):
+            xy1 = [j, i, 1]
+            result = np.matmul(TM, xy1)
+            P = [int(round(result[0] / result[2])), int(round(result[1] / result[2]))]
+            if (P[1] < 480) & (P[0] < 640):
+                license_plate[i, j] = frame[P[1], P[0]]
+
+    return license_plate
+
+def affine(frame, width, height, tl, tr, br, bl):
+    TL = [0, 0]
+    TR = [0, width]
+    BL = [height, 0]
+
+    A = np.array([
+        [TL[1], TL[0], 1, 0, 0, 0],
+        [0, 0, 0, TL[1], TL[0], 1],
+        [TR[1], TR[0], 1, 0, 0, 0],
+        [0, 0, 0, TR[1], TR[0], 1],
+        [BL[1], BL[0], 1, 0, 0, 0],
+        [0, 0, 0, BL[1], BL[0], 1]
+    ])
+
+    b = np.array([tl[1], tl[0], tr[1], tr[0], bl[1], bl[0]])
+
+    H = np.linalg.lstsq(A, b, rcond=None)[0]
+    TM = np.array([[H[0], H[1], H[2]], [H[3], H[4], H[5]],[0, 0, 1]])
+
+    frame_copy = frame.copy()
+    license_plate = np.zeros((height, width, 3), np.uint8)
+
+    for i in range(height):
+        for j in range(width):
+            xy1 = [j, i, 1]
+            result = np.matmul(TM, xy1)
+            P = [int(round(result[0])), int(round(result[1]))]
+            if (P[1] < 480) & (P[0] < 640):
+                license_plate[i, j] = frame[P[1], P[0]]
+
+    return license_plate
 
 
-def order_points(pts):
-    # initialize a list of coordinates that will be ordered
-    # such that the first entry in the list is the top-left,
-    # the second entry is the top-right, the third is the
-    # bottom-right, and the fourth is the bottom-left
-    rect = np.zeros((4, 2), dtype="float32")
+def transform_frame(corners, frame):
+    (tl, tr, br, bl) = corners
 
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-
-    # return the ordered coordinates
-    return rect
-
-def plate_transform(image, box):
-    """
-    Transforms a inclined plate into a straight plate
-    :param image: plate image
-    :param box: list of the four vertices' coordinates of the plate's bounding rectangle
-    :return: straightened image
-    """
-
-    # obtain the bounding rectangle's vertices and order them
-    rect = order_points(box)
-    (tl, tr, br, bl) = rect
+    const = 0
+    # pad the corners with a constant const
+    tl = [tl[0] - const, tl[1] - const]
+    tr = [tr[0] - const, tr[1] + const]
+    bl = [bl[0] + const, bl[1] - const]
+    br = [br[0] + const, br[1] + const]
 
     # Computes the width of the plate
     lower_width = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
@@ -114,211 +258,71 @@ def plate_transform(image, box):
     left_height = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
     height = max(int(right_height), int(left_height))
 
-    # Construct the set of destination points to obtain a "birds eye view" of the plate
-    dst = np.array([
-        [0, 0],
-        [width - 1, 0],
-        [width - 1, height - 1],
-        [0, height - 1]], dtype="float32")
+    license_plate = affine(frame, width, height, tl, tr, br, bl)
+    return license_plate
 
-    # compute the perspective transform matrix
-    transform_matrix = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, transform_matrix, (width, height))
+def extract_plate(frame, frame_number):
+    # show_image(frame, "frame{nr}".format(nr = frame_number))
+    # try to detect a yellow LP
+    yellow_plate = yellow_mode(frame)
+    #show_image(yellow_plate, "Yellow plate")
 
-    # return the warped image
-    return warped
+    # extract edges out of binary image
+    edges = edge_detection(yellow_plate)
+    edgesclone = edges.copy()
 
+    # find contours in binary image
+    contours = find_contours(edges)
 
-def plate_detection(image, contours):
-    """
-    Detects the plate on the frame
-    :param image: frame to be analyzed
-    :param contours: contours retrieved of the pre-processed frame
-    :return: list containing images of all plates detected
-    """
-    final_contours = []
-    i = 0
-    corner_table = np.zeros((4, 2))
-    # hull_img = np.zeros((image.shape[0], image.shape[1]), np.uint8)
+    final = []
+    for cnt in contours:
+        if (verify_contour(cnt)):
+            final.append(cnt)
 
-    for cnt in contours: # Loops and verify all contours for acceptable plates
-        rect = cv2.minAreaRect(cnt)
-        box = cv2.boxPoints(rect)
-        box = np.int0(box)
-        if verify_plate(box):
-            corners = find_corners2(cnt)
+    # finds the corners of the contour that has met all criteria
 
-            """corners = find_corners(cnt)
-            for i in range(4):
-                corner_table[i, 0] = int(corners[i, 0, 0])
-                corner_table[i, 1] = int(corners[i, 0, 1])
-            print(corner_table)
-            for pnt in cross_points:
-                cv2.circle(houghed, pnt, 5, (0,0,255), -1)
-            cv2.imshow("hough",houghed)
-            cv2.waitKey(0)"""
-            
-            final_contours.append(box)
-        i += 1
+    licenseplates = []
 
-    if not final_contours: # Returns None if no acceptable plate found
-        return None
+    while (len(final) > 0):
+        corners = find_corners(final.pop())
+        lp = transform_frame(corners, frame)
+        licenseplates.append(lp)
 
-    # localized = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    # cv2.drawContours(localized, final_contours, 0, (0, 255, 0), 3)
+    frame_im = Image.fromarray(frame)
+    frame_im.save('licenseplates/frame{frame_number}.jpg'.format(frame_number=frame_number), 'JPEG')
 
-    # Transforms and straighten each acceptable contours
-    plate_img = []
-    for cnt in final_contours:
-        plate_img.append(plate_transform(image, cnt))
+    edges_im = Image.fromarray(edges)
+    edges_im.save('licenseplates/edges{frame_number}.jpg'.format(frame_number=frame_number), 'JPEG')
 
-        # Show each localized plates
-        #show_image(plate_img[len(plate_img)-1])
-    return plate_img
+    count = 0
+    for lp in licenseplates:
+        lp_im = Image.fromarray(lp)
+        lp_im.save('licenseplates/lp{frame_number}_{count}.jpg'.format(frame_number=frame_number, count=count), 'JPEG')
+        count += 1
 
-
-def yellow_mode(frame):
-    """
-    Localize Dutch yellow license plates and recognize them.
-    :param frame: Actual frame extracted from the video.
-    :return: list containing all plates recognized
-    """
-
-    # Blur the image to uniformize color of the plate
-    blur = cv2.GaussianBlur(frame, (9, 9), 0)
-
-    # Keep record of gray_scales frame for window detection
-
-    # Convert to HSV color model
-    hsv_img = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
-    
-    # Yellow parts extraction
-    light_orange = (15, 60, 70)
-    dark_orange = (37, 255, 220)
-    mask = cv2.inRange(hsv_img, light_orange, dark_orange)
-    masked = cv2.bitwise_and(frame, frame, mask=mask)
-
-    # initialize kernel for morphological operations
-    kernel = np.ones((5,5),np.uint8)
-
-    # perform opening on the mask
-    opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)    
-    masked_opening = cv2.bitwise_and(frame, frame, mask=opening)
-
-    # perform dilation on the mask
-    dilate = cv2.dilate(opening, kernel, iterations = 1)
-    LP_I = cv2.bitwise_and(frame, frame, mask=dilate)
-
-    show_image(LP_I)
-
-       
-    # BGR to gray scale conversion
-    gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
-    
-    # Binarize frame with very low threshold to ease edge detection
-    (thresh, binary) = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-    
-    # Perform canny edge detection
-    edged = cv2.Canny(binary, 50, 100)
-
-    # retrieve contours of the plate
-    contours, hierarchy = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-
-    # Change original image to gray scale
-    gray_original = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    # Localize all plates in the frame and return them in a single list
-    plates =  plate_detection(gray_original, contours)
-
-    return plates
-
-
-
+    return licenseplates
 
 
 if __name__ == '__main__':
+    # simply to have "checkpoints" in this code, faster for debugging and stuff
     # retrieves video frames in video_arr.txt file
     with open("video_arr.txt", "rb") as fp:
         images = pickle.load(fp)
 
-    #plate_detection(cv2.imread('licenseplate.png'))
-
+    # images is an array with selected frames, where at each index i there is a tuple (frame_index_i, frame_i)
     plates = []
 
     not_found = cv2.imread('error.png')
-
+    print("[", end="")
     for image in images:
-        image = np.array(image[1])
-        plates.append(yellow_mode(image))
+        print("#", end="")
+        result = extract_plate(image[1], image[0])
+        for plate in result:
+            if len(plate) != 0:
+                plates.append((image[0], plate))
 
-    for plate in plates:
-        if(plate is not None):
-            show_image(plate[len(plate) - 1])
+    print("]", end="")
 
-        else:
-            show_image(not_found)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-"""def plate_detection(img):
-    # preprocess the image
-    #gray = preprocess(img)
-    #show_image(gray)
-
-    print(np.average(img[:, :, 0]))
-    print(np.average(img[:, :, 1]))
-    print(np.average(img[:, :, 2]))
-
-    lower = np.array([8, 73, 85])
-    upper = np.array([95, 200, 190])
-
-    lower = np.array([8, 73, 95])
-    upper = np.array([86, 166, 199])
-
-    mask = cv2.inRange(img, lower, upper)
-
-    show_image(mask)
-
-    kernel = np.ones((3, 3), np.uint8)
-
-    opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-    dilation = cv2.dilate(opening, kernel, iterations=1)
-    show_image(dilation)
-
-    cnts, tree = cv2.findContours(dilation, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(img, cnts, -1, (0,255,0), 3)
-    show_image(img)
-
-    for c in cnts:
-        # approximate the contour
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.018 * peri, True)
-        # if our approximated contour has four points, then
-        # we can assume that we have found our screen
-        if len(approx) == 4:
-            screenCnt = approx
-            break
-
-    cv2.drawContours(img, screenCnt, -1, (0,255,0), 3)
-    show_image(img)
-
-    plate_imgs = img
-    return plate_imgs"""
-
-
-
+    # save the cropped license plates in license_plates.txt file
+    with open("license_plates.txt", "wb") as fp:
+        pickle.dump(plates, fp)

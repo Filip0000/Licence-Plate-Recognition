@@ -29,18 +29,23 @@ def sample_video(file_path, sample_frequency):
     video_arr = []
 
     sum = 0
-    while (video.isOpened()):
+    captured_frames_count = 0
+    while video.isOpened():
         ret, frame = video.read()
 
-        if (ret == True):
-
-            if ((sum / fps) % sample_frequency == 0):
+        if ret:
+            if (sum / fps) % sample_frequency == 0:
+                captured_frames_count += 1
                 video_arr.append((sum, frame))
-
-        if(sum == 24 * 10):
+        else:
             break
-
         sum += 1
+
+    video.release()
+
+    print("FPS of video :", fps)
+    print("Number of frames in video :", sum)
+    print("Number of frames captured :", captured_frames_count)
 
     return video_arr
 
