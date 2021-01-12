@@ -232,10 +232,6 @@ def yellow_mode(frame):
 
     return plates
 
-
-
-
-
 if __name__ == '__main__':
     # retrieves video frames in video_arr.txt file
     with open("video_arr.txt", "rb") as fp:
