@@ -23,7 +23,6 @@ Hints:
 2. You may need to define two ways for localizing plates(yellow or other colors)
 """
 
-
 def show_image(image, label):
     cv2.imshow(label, image)
     k = cv2.waitKey(0)

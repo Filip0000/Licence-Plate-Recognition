@@ -34,9 +34,10 @@ def sample_video(file_path, sample_frequency):
         ret, frame = video.read()
 
         if ret:
-            if (sum / fps) % sample_frequency == 0:
+            if sum % (fps/sample_frequency) == 0:
                 captured_frames_count += 1
-                video_arr.append((sum, frame))
+                seconds = sum / fps
+                video_arr.append((sum, frame, seconds))
         else:
             break
         sum += 1
